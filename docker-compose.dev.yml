@@ -1,0 +1,11 @@
+services:
+  # Local development override for developer convenience.
+  keycloak:
+    command: start-dev --import-realm
+
+  app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile.dev
+    environment:
+      ENVIRONMENT: development

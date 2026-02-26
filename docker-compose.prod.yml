@@ -1,0 +1,17 @@
+services:
+  # Apply with: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+  # Production override: disable Keycloak dev mode.
+  keycloak:
+    command: start --import-realm --http-enabled=true --hostname-strict=false
+
+  # Production override: avoid passing password on redis-cli command line args.
+  redis:
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping | grep -q PONG"]
+
+  app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    environment:
+      ENVIRONMENT: production

@@ -1,0 +1,134 @@
+{
+  "realm": "nids",
+  "enabled": true,
+  "displayName": "NIDS Authentication",
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "maxFailureWaitSeconds": 900,
+  "minimumQuickLoginWaitSeconds": 60,
+  "waitIncrementSeconds": 300,
+  "quickLoginCheckMilliSeconds": 1000,
+  "maxDeltaTimeSeconds": 86400,
+  "failureFactor": 5,
+  "passwordPolicy": "length(14) and upperCase(1) and lowerCase(1) and digits(1) and specialChars(1) and passwordHistory(5) and notUsername",
+  "otpPolicyType": "totp",
+  "otpPolicyAlgorithm": "HmacSHA1",
+  "otpPolicyDigits": 6,
+  "otpPolicyPeriod": 30,
+  "otpPolicyInitialCounter": 0,
+  "accessTokenLifespan": 900,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 604800,
+  "offlineSessionIdleTimeout": 2592000,
+  "roles": {
+    "realm": [
+      {
+        "name": "super_admin",
+        "description": "Full system control - manage users, configure global settings, deploy updates, view all logs",
+        "composite": false
+      },
+      {
+        "name": "sensor_manager",
+        "description": "Device provisioning - generate/revoke sensor API keys, view sensor health status",
+        "composite": false
+      },
+      {
+        "name": "security_analyst",
+        "description": "Operational monitoring - view dashboards, investigate alerts, acknowledge incidents, generate reports. PII masked, no raw payloads",
+        "composite": false
+      },
+      {
+        "name": "auditor",
+        "description": "Compliance and review - read-only access to audit logs and configuration history. PII masked, no raw payloads",
+        "composite": false
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "nids-api",
+      "name": "NIDS API",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "change_me_client_secret",
+      "redirectUris": [
+        "http://localhost:8000/*",
+        "http://localhost:3000/*"
+      ],
+      "webOrigins": [
+        "http://localhost:8000",
+        "http://localhost:3000"
+      ],
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": true,
+      "attributes": {
+        "access.token.lifespan": "900",
+        "client.session.idle.timeout": "1800",
+        "client.session.max.lifespan": "604800"
+      },
+      "protocolMappers": [
+        {
+          "name": "realm-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "multivalued": "true",
+            "userinfo.token.claim": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "realm_access.roles",
+            "jsonType.label": "String"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "admin",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "admin@nids.local",
+      "firstName": "System",
+      "lastName": "Administrator",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Admin@nids2024!",
+          "temporary": true
+        }
+      ],
+      "realmRoles": [
+        "super_admin"
+      ]
+    }
+  ],
+  "requiredActions": [
+    {
+      "alias": "CONFIGURE_TOTP",
+      "name": "Configure OTP",
+      "providerId": "CONFIGURE_TOTP",
+      "enabled": true,
+      "defaultAction": true,
+      "priority": 10
+    },
+    {
+      "alias": "UPDATE_PASSWORD",
+      "name": "Update Password",
+      "providerId": "UPDATE_PASSWORD",
+      "enabled": true,
+      "defaultAction": false,
+      "priority": 30
+    }
+  ]
+}

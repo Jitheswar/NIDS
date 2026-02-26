@@ -1,0 +1,187 @@
+# =============================================================================
+# Linkerd Service Mesh Configuration for NIDS
+# =============================================================================
+# Prerequisites:
+#   1. Install Linkerd CLI: curl -fsL https://run.linkerd.io/install | sh
+#   2. Install Linkerd on cluster: linkerd install --crds | kubectl apply -f -
+#                                  linkerd install | kubectl apply -f -
+#   3. Verify: linkerd check
+#
+# Apply these annotations to enable automatic mTLS between all NIDS services.
+# Linkerd injects a sidecar proxy that handles mTLS transparently.
+# =============================================================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nids
+  annotations:
+    linkerd.io/inject: enabled
+---
+# Network policy: deny all ingress by default, allow only necessary traffic
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+  namespace: nids
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress: []
+---
+# Allow app -> mariadb
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-app-to-mariadb
+  namespace: nids
+spec:
+  podSelector:
+    matchLabels:
+      app: mariadb
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: nids-api
+      ports:
+        - port: 3306
+---
+# Allow app -> redis
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-app-to-redis
+  namespace: nids
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: nids-api
+      ports:
+        - port: 6379
+---
+# Allow app -> keycloak
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-app-to-keycloak
+  namespace: nids
+spec:
+  podSelector:
+    matchLabels:
+      app: keycloak
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: nids-api
+      ports:
+        - port: 8080
+---
+# Allow app -> step-ca
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-app-to-step-ca
+  namespace: nids
+spec:
+  podSelector:
+    matchLabels:
+      app: step-ca
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: nids-api
+      ports:
+        - port: 9000
+---
+# Allow app -> loki
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-app-to-loki
+  namespace: nids
+spec:
+  podSelector:
+    matchLabels:
+      app: loki
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: nids-api
+      ports:
+        - port: 3100
+---
+# Allow external ingress -> app only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-app
+  namespace: nids
+spec:
+  podSelector:
+    matchLabels:
+      app: nids-api
+  ingress:
+    - ports:
+        - port: 8000
+---
+# Linkerd ServiceProfile for the NIDS API (enables per-route metrics and retries)
+apiVersion: linkerd.io/v1alpha2
+kind: ServiceProfile
+metadata:
+  name: nids-api.nids.svc.cluster.local
+  namespace: nids
+spec:
+  routes:
+    - name: health
+      condition:
+        method: GET
+        pathRegex: /health
+      isRetryable: true
+    - name: login
+      condition:
+        method: POST
+        pathRegex: /auth/login
+    - name: sensor-data
+      condition:
+        method: POST
+        pathRegex: /sensors/data
+    - name: audit-logs
+      condition:
+        method: GET
+        pathRegex: /audit/logs.*
+---
+# Authorization policy: only authenticated mesh identities can reach the app
+apiVersion: policy.linkerd.io/v1beta3
+kind: Server
+metadata:
+  name: nids-api-server
+  namespace: nids
+spec:
+  podSelector:
+    matchLabels:
+      app: nids-api
+  port: 8000
+  proxyProtocol: HTTP/2
+---
+apiVersion: policy.linkerd.io/v1beta3
+kind: ServerAuthorization
+metadata:
+  name: nids-api-authz
+  namespace: nids
+spec:
+  server:
+    name: nids-api-server
+  client:
+    meshTLS:
+      identities:
+        - "*.nids.serviceaccount.identity.linkerd.cluster.local"

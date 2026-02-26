@@ -1,0 +1,215 @@
+services:
+  # Secure-by-default base compose profile.
+  # Dev runbook: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+  # Prod runbook: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+  mariadb:
+    image: mariadb:11.4
+    container_name: nids-mariadb
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      MARIADB_DATABASE: nids
+      MARIADB_USER: ${DB_USER}
+      MARIADB_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - mariadb_data:/var/lib/mysql
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    ports:
+      - "3306:3306"
+    networks:
+      - nids-internal
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    container_name: nids-redis
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    command: redis-server --requirepass ${REDIS_PASSWORD} --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - nids-internal
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: nids-keycloak
+    restart: unless-stopped
+    command: start --import-realm --http-enabled=true --hostname-strict=false
+    environment:
+      KC_DB: mariadb
+      KC_DB_URL: jdbc:mariadb://mariadb:3306/keycloak
+      KC_DB_USERNAME: ${DB_USER}
+      KC_DB_PASSWORD: ${DB_PASSWORD}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KC_HEALTH_ENABLED: "true"
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+    volumes:
+      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    ports:
+      - "8080:8080"
+    networks:
+      - nids-internal
+      - nids-frontend
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000; echo -e 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3; grep -q '200\\|UP' <&3"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  step-ca:
+    image: smallstep/step-ca:latest
+    container_name: nids-step-ca
+    restart: unless-stopped
+    environment:
+      DOCKER_STEPCA_INIT_NAME: "NIDS PKI"
+      DOCKER_STEPCA_INIT_DNS_NAMES: "step-ca,localhost"
+      DOCKER_STEPCA_INIT_REMOTE_MANAGEMENT: "true"
+      DOCKER_STEPCA_INIT_PROVISIONER_NAME: nids-provisioner
+      DOCKER_STEPCA_INIT_PASSWORD: ${STEP_CA_PASSWORD}
+    volumes:
+      - step_ca_data:/home/step
+    ports:
+      - "9000:9000"
+    networks:
+      - nids-internal
+    healthcheck:
+      test: ["CMD", "step", "ca", "health", "--ca-url", "https://localhost:9000", "--root", "/home/step/certs/root_ca.crt"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  loki:
+    image: grafana/loki:3.0.0
+    container_name: nids-loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+    networks:
+      - nids-internal
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3100/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  infisical:
+    image: infisical/infisical:latest
+    container_name: nids-infisical
+    restart: unless-stopped
+    environment:
+      ENCRYPTION_KEY: ${INFISICAL_ENCRYPTION_KEY}
+      AUTH_SECRET: ${INFISICAL_AUTH_SECRET}
+      DB_CONNECTION_URI: mysql://${DB_USER}:${DB_PASSWORD}@mariadb:3306/infisical
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      SITE_URL: http://localhost:8085
+    ports:
+      - "8085:8080"
+    networks:
+      - nids-internal
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/api/status || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: nids-app
+    restart: unless-stopped
+    labels:
+      # Linkerd service mesh annotations (Phase 3)
+      # When deploying to K8s with Linkerd, these translate to pod annotations
+      linkerd.io/inject: enabled
+      config.linkerd.io/skip-outbound-ports: "3306,6379"
+    environment:
+      DB_HOST: mariadb
+      DB_PORT: 3306
+      DB_NAME: nids
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: nids
+      KEYCLOAK_CLIENT_ID: nids-api
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET}
+      KEYCLOAK_ADMIN_USER: ${KEYCLOAK_ADMIN_USER}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      STEP_CA_URL: https://step-ca:9000
+      STEP_CA_PROVISIONER: nids-provisioner
+      STEP_CA_PASSWORD: ${STEP_CA_PASSWORD}
+      STEP_CA_FINGERPRINT: ${STEP_CA_FINGERPRINT:-}
+      LOKI_URL: http://loki:3100
+      MTLS_ENABLED: ${MTLS_ENABLED:-false}
+      ANOMALY_DETECTION_ENABLED: ${ANOMALY_DETECTION_ENABLED:-true}
+      ZTNA_ENABLED: ${ZTNA_ENABLED:-false}
+      ROTATION_CHECK_INTERVAL: ${ROTATION_CHECK_INTERVAL:-3600}
+      INFISICAL_URL: http://infisical:8080
+      INFISICAL_TOKEN: ${INFISICAL_TOKEN:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - step_ca_certs:/app/certs:ro
+      - crl_data:/app/crl
+    networks:
+      - nids-internal
+      - nids-frontend
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+
+networks:
+  nids-internal:
+    driver: bridge
+    internal: true
+  nids-frontend:
+    driver: bridge
+
+volumes:
+  mariadb_data:
+  redis_data:
+  step_ca_data:
+  step_ca_certs:
+  loki_data:
+  crl_data:
